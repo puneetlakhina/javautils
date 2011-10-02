@@ -1,4 +1,4 @@
-package com.sahyog;
+package com.blogspot.sahyog;
 
 import sun.jvm.hotspot.memory.StringTable;
 import sun.jvm.hotspot.memory.SystemDictionary;
