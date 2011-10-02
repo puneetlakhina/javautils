@@ -9,7 +9,10 @@ import sun.jvm.hotspot.oops.TypeArray;
 import sun.jvm.hotspot.runtime.VM;
 import sun.jvm.hotspot.tools.Tool;
 /**
+ * Print the string literal pool of a running JVM.
  * Based on http://www.docjar.com/html/api/sun/jvm/hotspot/tools/PermStat.java.html 
+ * Usage: java com.blogspot.sahyog.PrintStringTable &lt;Running JVM's PID&gt; <br />
+ * You need to add sa-jdi.jar to your class path. This is generally available in your JDK's lib directory. Also, you might need to run this class with super user privileges in order to access the other JVM. 
  * @author puneet
  *
  */
@@ -37,9 +40,13 @@ public class PrintStringTable extends Tool {
 		
 	}
 	public static void main(String args[]) throws Exception {
-		PrintStringTable pst = new PrintStringTable();
-		pst.start(args);
-		pst.stop();
+	    if(args.length == 0 || args.length > 1) {
+		System.err.println("Usage: java com.blogspot.sahyog.PrintStringTable <PID of the JVM whose string table you want to print>");
+		System.exit(1);
+	    }
+	    PrintStringTable pst = new PrintStringTable();
+	    pst.start(args);
+	    pst.stop();
 	}
 
 	@Override
