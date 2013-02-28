@@ -10,22 +10,20 @@ import sun.jvm.hotspot.runtime.VM;
 import sun.jvm.hotspot.tools.Tool;
 /**
  * Print the string literal pool of a running JVM.
- * Based on http://www.docjar.com/html/api/sun/jvm/hotspot/tools/PermStat.java.html 
+ * Based on http://www.docjar.com/html/api/sun/jvm/hotspot/tools/PermStat.java.html
  * Usage: java com.blogspot.sahyog.PrintStringTable &lt;Running JVM's PID&gt; <br />
- * You need to add sa-jdi.jar to your class path. This is generally available in your JDK's lib directory. Also, you might need to run this class with super user privileges in order to access the other JVM. 
+ * You need to add sa-jdi.jar to your class path. This is generally available in your JDK's lib directory. Also, you might need to run this class with super user privileges in order to access the other JVM.
  * @author puneet
  *
  */
 public class PrintStringTable extends Tool {
 	public PrintStringTable() {
-		
+
 	}
 	class StringPrinter implements StringTable.StringVisitor {
-		private OopField stringValueField;
+		private final OopField stringValueField;
 		public StringPrinter() {
-			VM vm = VM.getVM();
-			SystemDictionary sysDict = vm.getSystemDictionary();
-			InstanceKlass strKlass = sysDict.getStringKlass();
+			InstanceKlass strKlass = SystemDictionary.getStringKlass();
 			stringValueField = (OopField) strKlass.findField("value", "[C");
 		}
 		@Override
@@ -38,7 +36,7 @@ public class PrintStringTable extends Tool {
 			System.out.println("Address: " + instance.getHandle() + " Content: " + sb.toString());
 			//System.out.println(sb.toString());
 		}
-		
+
 	}
 	public static void main(String args[]) throws Exception {
 	    if(args.length == 0 || args.length > 1) {
