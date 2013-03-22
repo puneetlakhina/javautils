@@ -16,17 +16,18 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * This map should follow the semantics that anything within a transaction is
  * visible to consumers within the same transaction but is not visible outside
  * of the transaction until the commit happens. Any access within the same
- * thread is considered within the same transaction .
+ * thread is considered within the same transaction . The need here is that we
+ * should be able to modify a map but not have its results available until the
+ * map is committed. This implementation assumes the map isnt modified by anyone
+ * other than the transaction itself.
  *
- * <b>Any thread other than the transaction thread will block on any write
- * operations.</b>
  *
  * Commit needs to be atomic.
  *
  * @author puneet
  *
  */
-public class TransactionalMap<K, V> implements Map<K, V> {
+public class SingleThreadedTransactionableMap<K, V> implements Map<K, V>, Transactionable {
     private Map<K, V> transactionTransientMap = new HashMap<K, V>(); //this map is accessed by a single thread only
     private Set<K> newKeys = new HashSet<K>();
     private Set<Object> transactionTransientRemovedKeys = new HashSet<Object>();
@@ -42,7 +43,8 @@ public class TransactionalMap<K, V> implements Map<K, V> {
     };
 
     // Transaction related methods
-    public synchronized void begin() {
+    @Override
+    public synchronized void beginTransaction() {
         if (currentTransactionId == null) {
             rwLock.writeLock().lock();
             currentTransactionId = uniqueNum.get();
@@ -55,6 +57,7 @@ public class TransactionalMap<K, V> implements Map<K, V> {
 
     }
 
+    @Override
     public void commit() {
         ensureInTransaction();
         for (Object k : transactionTransientRemovedKeys) {
@@ -66,6 +69,7 @@ public class TransactionalMap<K, V> implements Map<K, V> {
         rwLock.writeLock().unlock();
     }
 
+    @Override
     public void abort() {
         try {
             ensureInTransaction();
@@ -200,7 +204,7 @@ public class TransactionalMap<K, V> implements Map<K, V> {
 
     @Override
     public Set<K> keySet() {
-        if(inTransaction()) {
+        if (inTransaction()) {
             return null; //TODO
         } else {
             rwLock.writeLock().lock(); //keySet() is a write operation since any modification of the returnned set are supposed to reflect back in the map
@@ -215,7 +219,7 @@ public class TransactionalMap<K, V> implements Map<K, V> {
 
     @Override
     public Collection<V> values() {
-        if(inTransaction()) {
+        if (inTransaction()) {
             return null; //TODO
         } else {
             rwLock.writeLock().lock(); //values() is a write operation since any modification of the returnned set are supposed to reflect back in the map
@@ -229,7 +233,7 @@ public class TransactionalMap<K, V> implements Map<K, V> {
 
     @Override
     public Set<java.util.Map.Entry<K, V>> entrySet() {
-        if(inTransaction()) {
+        if (inTransaction()) {
             return null; //TODO
         } else {
             rwLock.writeLock().lock(); //entrySet() is a write operation since any modification of the returnned set are supposed to reflect back in the map
@@ -256,5 +260,11 @@ public class TransactionalMap<K, V> implements Map<K, V> {
 
     private boolean isTransactionOnGoing() {
         return currentTransactionId != null;
+    }
+
+    private static final class TransactionContext<K,V> {
+        private Map<K, V> addupdates = new HashMap<K, V>(); //this map is accessed by a single thread only
+        private Set<K> newKeys = new HashSet<K>();
+        private Set<Object> removedKeys = new HashSet<Object>();
     }
 }
