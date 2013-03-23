@@ -1,14 +1,12 @@
 package com.blogspot.sahyog.collections;
 
+import java.util.AbstractMap;
+
+import java.util.Collections;
+
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * This is an attempt at a map with simple transaction capabilities. <br />
@@ -18,75 +16,61 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * of the transaction until the commit happens. Any access within the same
  * thread is considered within the same transaction . The need here is that we
  * should be able to modify a map but not have its results available until the
- * map is committed. This implementation assumes the map isnt modified by anyone
- * other than the transaction itself.
+ * map is committed. This implementation doesnt allow concurrent transactions
+ * and forces all non transaction threads to access the map in a read only
+ * fashion. It doesnt guard against change to the values mapped to existing
+ * keys, but it prevents against structural modifcations of the map.
  *
- *
- * Commit needs to be atomic.
+ * During commit other readers might be able to see values being comitted.
  *
  * @author puneet
  *
  */
-public class SingleThreadedTransactionableMap<K, V> implements Map<K, V>, Transactionable {
-    private Map<K, V> transactionTransientMap = new HashMap<K, V>(); //this map is accessed by a single thread only
-    private Set<K> newKeys = new HashSet<K>();
-    private Set<Object> transactionTransientRemovedKeys = new HashSet<Object>();
-    private Map<K, V> mainMap = new ConcurrentHashMap<K, V>();
-    private static final AtomicInteger uniqueId = new AtomicInteger(0);
-    private volatile Integer currentTransactionId = null;
-    private ReadWriteLock rwLock = new ReentrantReadWriteLock();
-    private static final ThreadLocal<Integer> uniqueNum = new ThreadLocal<Integer>() {
-        @Override
-        protected Integer initialValue() {
-            return uniqueId.getAndIncrement();
-        }
-    };
+public class SingleThreadedTransactionableMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Transactionable {
+    protected static ThreadLocal<TransactionContext> txContextThreadLocal = new ThreadLocal<TransactionContext>();
+    private volatile boolean ongoingTransaction = false;
+    private final Map<K, V> wrappedMap;
 
-    // Transaction related methods
+    public SingleThreadedTransactionableMap(Map<K, V> mapToWrap) {
+        this.wrappedMap = mapToWrap;
+    }
+
     @Override
     public synchronized void beginTransaction() {
-        if (currentTransactionId == null) {
-            rwLock.writeLock().lock();
-            currentTransactionId = uniqueNum.get();
-        } else if (!inTransaction()) {
-            throw new RuntimeException(
-                    "transaction map can only handle one transaction at a time. There is no concurrency because there is no serializability");
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            setupTransactionContext();
+            return;
         } else {
-            throw new RuntimeException("Begin should only be called once");
+            throw new TransactionException(
+                    "An existing transaction is in progress. This implementation does not allow for concurrent transactions");
         }
-
     }
 
     @Override
-    public void commit() {
-        ensureInTransaction();
-        for (Object k : transactionTransientRemovedKeys) {
-            mainMap.remove(k);
+    public void commit() throws IllegalStateException {
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            throw new TransactionException("No active transaction.");
         }
-        mainMap.putAll(transactionTransientMap);
-        transactionTransientMap.clear();
-        transactionTransientRemovedKeys.clear();
-        rwLock.writeLock().unlock();
+        existingContext.mergeContextIntoMainMap();
+        clearTransactionContext();
     }
 
     @Override
-    public void abort() {
-        try {
-            ensureInTransaction();
-            transactionTransientMap.clear();
-            transactionTransientRemovedKeys.clear();
-        } finally {
-            rwLock.writeLock().unlock();
+    public void abort() throws IllegalStateException {
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            throw new TransactionException("No active transaction.");
         }
+        clearTransactionContext();
+
     }
 
     @Override
     public int size() {
-        if (inTransaction()) {
-            return newKeys.size() + mainMap.size() - transactionTransientRemovedKeys.size();
-        } else {
-            return mainMap.size();
-        }
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        return existingContext == null ? wrappedMap.size() : existingContext.size();
     }
 
     @Override
@@ -96,175 +80,144 @@ public class SingleThreadedTransactionableMap<K, V> implements Map<K, V>, Transa
 
     @Override
     public boolean containsKey(Object key) {
-        if (inTransaction()) {
-            return !transactionTransientRemovedKeys.contains(key) && (mainMap.containsKey(key) || transactionTransientMap.containsKey(key));
-        } else {
-            return mainMap.containsKey(key);
-        }
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        return existingContext == null ? wrappedMap.containsKey(key) : existingContext.containsKey(key);
     }
 
     @Override
     public boolean containsValue(Object value) {
-        // TODO Auto-generated method stub
-        return false;
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        return existingContext == null ? wrappedMap.containsValue(value) : existingContext.containsValue(value);
     }
 
     @Override
     public V get(Object key) {
-        if (inTransaction()) {
-            if (transactionTransientRemovedKeys.contains(key)) {
-                return null;
-            }
-            V transientMapValue = transactionTransientMap.get(key);
-            return (transientMapValue != null) ? transientMapValue : mainMap.get(key);
-        } else {
-            return mainMap.get(key);
-        }
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        return existingContext == null ? wrappedMap.get(key) : existingContext.get(key);
     }
 
     @Override
+    @WriteOperation
     public V put(K key, V value) {
-        if (inTransaction()) {
-            return putInTransaction(key, value);
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            failIfOnGoingTransaction();
+            return wrappedMap.put(key, value);
         } else {
-            rwLock.writeLock().lock();
-            return putNoTransaction(key, value);
-        }
-    }
-
-    private V putInTransaction(K key, V value) {
-        if (transactionTransientRemovedKeys.contains(key)) {
-            transactionTransientRemovedKeys.remove(key);
-        }
-        if (!newKeys.contains(key) && !mainMap.containsKey(key)) {
-            newKeys.add(key);
-        }
-        V transientMapPreviousValue = transactionTransientMap.put(key, value);
-        return (transientMapPreviousValue != null) ? transientMapPreviousValue : mainMap.get(key);
-    }
-
-    private V putNoTransaction(K key, V value) {
-        rwLock.writeLock().lock();
-        try {
-            return mainMap.put(key, value);
-        } finally {
-            rwLock.writeLock().unlock();
+            return existingContext.put(key, value);
         }
     }
 
     @Override
+    @WriteOperation
     public V remove(Object key) {
-        if (inTransaction()) {
-            transactionTransientRemovedKeys.add(key);
-            newKeys.remove(key);
-            V transientMapPreviousValue = transactionTransientMap.remove(key);
-            return (transientMapPreviousValue != null) ? transientMapPreviousValue : mainMap.get(key);
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            failIfOnGoingTransaction();
+            return wrappedMap.remove(key);
         } else {
-            rwLock.writeLock().lock();
-            try {
-                return mainMap.remove(key);
-            } finally {
-                rwLock.writeLock().unlock();
-            }
+            return existingContext.remove(key);
         }
     }
 
     @Override
+    @WriteOperation
     public void putAll(Map<? extends K, ? extends V> m) {
-        if (!inTransaction()) {
-            rwLock.writeLock().lock();
-            try {
-                mainMap.putAll(m);
-            } finally {
-                rwLock.writeLock().unlock();
-            }
+        if (m == null || m.isEmpty()) {
             return;
+        }
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            failIfOnGoingTransaction();
+            wrappedMap.putAll(m);
         } else {
             for (Map.Entry<? extends K, ? extends V> entry : m.entrySet()) {
-                putInTransaction(entry.getKey(), entry.getValue());
+                existingContext.put(entry.getKey(), entry.getValue());
             }
         }
     }
 
     @Override
+    @WriteOperation
     public void clear() {
-        if (inTransaction()) {
-            transactionTransientRemovedKeys.clear();
-            transactionTransientRemovedKeys.addAll(mainMap.keySet());
-            transactionTransientMap.clear();
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            failIfOnGoingTransaction();
+            wrappedMap.clear();
         } else {
-            rwLock.writeLock().lock();
-            try {
-                mainMap.clear();
-            } finally {
-                rwLock.writeLock().unlock();
-            }
+            existingContext.clear();
         }
     }
 
     @Override
+    @WriteOperation
+    /**
+     * Keyset method from java util Map has the contract that any modifications are reflected back in the map. We cant have that while a transaction is on going. <br />
+     * At the same time most users of this method dont actually modify any keys but just iterate.
+     * So this implementation tries to give the best of both worlds. In case of an ongoing transaction it returns an unmodifiable set so that you cant do anything to it.
+     */
     public Set<K> keySet() {
-        if (inTransaction()) {
-            return null; //TODO
-        } else {
-            rwLock.writeLock().lock(); //keySet() is a write operation since any modification of the returnned set are supposed to reflect back in the map
-            try {
-                return mainMap.keySet();
-            } finally {
-                rwLock.writeLock().unlock();
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            if (ongoingTransaction) {
+                return Collections.unmodifiableSet(wrappedMap.keySet());
+            } else {
+                return wrappedMap.keySet();
             }
+        } else {
+            return existingContext.keySet();
         }
-
     }
 
     @Override
+    @WriteOperation
+    /**
+     * Behavios is similar to keyset. unmodifiable collection is returned if a transaction is currently on going.
+     */
     public Collection<V> values() {
-        if (inTransaction()) {
-            return null; //TODO
-        } else {
-            rwLock.writeLock().lock(); //values() is a write operation since any modification of the returnned set are supposed to reflect back in the map
-            try {
-                return mainMap.values();
-            } finally {
-                rwLock.writeLock().unlock();
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            if (ongoingTransaction) {
+                return Collections.unmodifiableCollection(wrappedMap.values());
+            } else {
+                return wrappedMap.values();
             }
+        } else {
+            return existingContext.values();
         }
     }
 
     @Override
     public Set<java.util.Map.Entry<K, V>> entrySet() {
-        if (inTransaction()) {
-            return null; //TODO
-        } else {
-            rwLock.writeLock().lock(); //entrySet() is a write operation since any modification of the returnned set are supposed to reflect back in the map
-            try {
-                return mainMap.entrySet();
-            } finally {
-                rwLock.writeLock().unlock();
+        TransactionContext<K, V> existingContext = getTransactionContext();
+        if (existingContext == null) {
+            if (ongoingTransaction) {
+                return Collections.unmodifiableSet(wrappedMap.entrySet());
+            } else {
+                return wrappedMap.entrySet();
             }
+        } else {
+            return existingContext.entrySet();
         }
     }
 
-    private boolean inTransaction() {
-        return currentTransactionId == uniqueNum.get();
+    private TransactionContext<K, V> getTransactionContext() {
+        return txContextThreadLocal.get();
     }
 
-    /**
-     * Ensure we are in a transaction. other wise throw exception
-     */
-    private void ensureInTransaction() {
-        if (!inTransaction()) {
-            throw new RuntimeException("Commit called when not in transaction");
+    private void setupTransactionContext() {
+        txContextThreadLocal.set(new TransactionContext<K, V>(wrappedMap));
+        ongoingTransaction = true;
+    }
+
+    private void clearTransactionContext() {
+        txContextThreadLocal.set(null);
+        ongoingTransaction = false;
+    }
+
+    private void failIfOnGoingTransaction() {
+        if (ongoingTransaction) {
+            throw new IllegalStateException("A transaction is on going . No write operations are allowed");
         }
-    }
-
-    private boolean isTransactionOnGoing() {
-        return currentTransactionId != null;
-    }
-
-    private static final class TransactionContext<K,V> {
-        private Map<K, V> addupdates = new HashMap<K, V>(); //this map is accessed by a single thread only
-        private Set<K> newKeys = new HashSet<K>();
-        private Set<Object> removedKeys = new HashSet<Object>();
     }
 }
