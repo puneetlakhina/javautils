@@ -1,5 +1,7 @@
 package com.blogspot.sahyog.collections;
 
+import java.util.concurrent.Callable;
+
 import org.junit.Test;
 
 import org.junit.Before;
@@ -64,6 +66,28 @@ public class TransactionMapTest {
         ensureContainsKeyValue(key, value);
     }
 
+    @Test
+    public void testInterleaving() throws Exception {
+        final String transactionKey = "tk1";
+        final String transactionValue = "tv1";
+    }
+
+    private class InterleavedSignallingThread extends Thread {
+        private boolean isFailed = false;
+        private Throwable failedException = null;
+        public <V> InterleavedSignallingThread(Callable<V> callable, Object lockingObject, MutableBoolean shouldRun, MutableBoolean runOther) {
+
+        }
+        @Override
+        public void run() {
+            try {
+
+            } catch(Throwable e) {
+                isFailed = true;
+                failedException = e;
+            }
+        }
+    }
     private void ensureContainsKeyValue(String key, String value) {
         assertTrue(transactionalMap.containsKey(key));
         assertTrue(transactionalMap.containsValue(value));
