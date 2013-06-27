@@ -51,7 +51,7 @@ public class PrintHeapStrings extends Tool {
 
     public static void main(String args[]) throws Exception {
         if (args.length == 0 || args.length > 1) {
-            System.err.println("Usage: java com.blogspot.sahyog.PrintStringTable <PID of the JVM whose string table you want to print>");
+            System.err.println("Usage: java com.blogspot.sahyog.PrintHeapStrings <PID of the JVM whose heap strings you want to print>");
             System.exit(1);
         }
         PrintHeapStrings pst = new PrintHeapStrings();
