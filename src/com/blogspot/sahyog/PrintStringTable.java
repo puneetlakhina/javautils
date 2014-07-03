@@ -34,7 +34,6 @@ public class PrintStringTable extends Tool {
 				sb.append(charArray.getCharAt(i));
 			}
 			System.out.println("Address: " + instance.getHandle() + " Content: " + sb.toString());
-			//System.out.println(sb.toString());
 		}
 
 	}
